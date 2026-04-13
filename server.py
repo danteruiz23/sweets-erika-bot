@@ -3,6 +3,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 import anthropic
 import stripe
+from supabase import create_client
 import os
 import json
 import re
@@ -12,6 +13,7 @@ app = Flask(__name__)
 anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
 twilio_client = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
+supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
 ERIKA_WHATSAPP = os.environ["ERIKA_WHATSAPP"]   # ej: whatsapp:+13055551234
 TWILIO_FROM     = os.environ["TWILIO_FROM"]      # ej: whatsapp:+14155238886
@@ -65,7 +67,31 @@ def clean_text(text):
     return re.sub(r'###ORDER_COMPLETE###.*?###END_ORDER###', '', text, flags=re.DOTALL).strip()
 
 
-def create_stripe_link(order):
+def save_order(order, payment_url, session_id):
+    try:
+        supabase.table("pedidos").insert({
+            "nombre": order.get("nombre", ""),
+            "contacto": order.get("contacto", ""),
+            "productos": order.get("productos", ""),
+            "fecha_entrega": order.get("fecha", ""),
+            "entrega": order.get("entrega", ""),
+            "total": order.get("total", 0),
+            "estado": "pendiente",
+            "stripe_url": payment_url,
+            "stripe_session_id": session_id,
+        }).execute()
+    except Exception as e:
+        print(f"Supabase error: {e}")
+
+
+def update_order_status(session_id, status):
+    try:
+        supabase.table("pedidos").update({"estado": status}).eq("stripe_session_id", session_id).execute()
+    except Exception as e:
+        print(f"Supabase update error: {e}")
+
+
+
     total_cents = int(order.get("total", 0) * 100)
     if total_cents <= 0:
         total_cents = 5000  # fallback $50
@@ -92,7 +118,7 @@ def create_stripe_link(order):
             "entrega": order.get("entrega", ""),
         }
     )
-    return session.url
+    return session
 
 
 def notify_erika(order, payment_url):
@@ -140,11 +166,13 @@ def whatsapp():
 
     if order:
         try:
-            payment_url = create_stripe_link(order)
+            session = create_stripe_link(order)
+            payment_url = session.url
             reply += f"\n\n💳 *Link de pago:*\n{payment_url}"
+            save_order(order, payment_url, session.id)
             notify_erika(order, payment_url)
         except Exception as e:
-            print(f"Stripe/Twilio error: {e}")
+            print(f"Stripe/Twilio/Supabase error: {e}")
 
     twiml = MessagingResponse()
     twiml.message(reply)
@@ -166,6 +194,8 @@ def stripe_webhook():
         session  = event["data"]["object"]
         nombre   = session["metadata"].get("nombre", "Cliente")
         total    = session["amount_total"] / 100
+        session_id = session["id"]
+        update_order_status(session_id, "pagado")
         twilio_client.messages.create(
             body=f"✅ *¡Pago confirmado!*\n👤 {nombre}\n💰 ${total:.2f}\n\n¡Manos a la obra! 🎂",
             from_=TWILIO_FROM,
@@ -183,4 +213,3 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
