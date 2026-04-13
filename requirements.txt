@@ -4,3 +4,4 @@ anthropic==0.49.0
 gunicorn==22.0.0
 httpx==0.27.2
 stripe==10.5.0
+supabase==2.5.0
