@@ -45,26 +45,40 @@ FLUJO DE PEDIDO — recopila en orden:
 4. Fecha de entrega deseada
 5. Dirección o si es pick-up
 
-Cuando tengas TODOS los datos, confirma el resumen y el total, luego incluye al final:
+Cuando tengas TODOS los datos, confirma el resumen y el total. Luego pregunta:
+"¿Cómo prefieres pagar? 💳 Tarjeta o 🏦 Zelle"
+
+Si el cliente elige TARJETA, incluye al final:
 ###ORDER_COMPLETE###
-{"nombre":"...","contacto":"...","productos":"...","fecha":"...","entrega":"...","total":0}
+{"nombre":"...","contacto":"...","productos":"...","fecha":"...","entrega":"...","total":0,"pago":"tarjeta"}
 ###END_ORDER###
+
+Si el cliente elige ZELLE, incluye al final el mensaje de instrucciones y:
+###ORDER_ZELLE###
+{"nombre":"...","contacto":"...","productos":"...","fecha":"...","entrega":"...","total":0,"pago":"zelle"}
+###END_ORDER###
+
+Para pagos con Zelle di exactamente:
+"Para completar tu pedido, envía $[TOTAL] por Zelle a:
+📱 786-499-9520
+👤 Nombre: Erika L.
+Una vez realizado el pago, envíanos una captura de pantalla y confirmamos tu pedido de inmediato. ¡Gracias!"
 
 Teléfono: 786-499-9520 | Instagram: @erikalng"""
 
 
 def parse_order(text):
-    m = re.search(r'###ORDER_COMPLETE###\s*(.*?)\s*###END_ORDER###', text, re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(1))
-    except:
-        return None
-
+    for tag in ["ORDER_COMPLETE", "ORDER_ZELLE"]:
+        m = re.search(rf'###{tag}###\s*(.*?)\s*###END_ORDER###', text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except:
+                return None
+    return None
 
 def clean_text(text):
-    return re.sub(r'###ORDER_COMPLETE###.*?###END_ORDER###', '', text, flags=re.DOTALL).strip()
+    return re.sub(r'###ORDER_(COMPLETE|ZELLE)###.*?###END_ORDER###', '', text, flags=re.DOTALL).strip()
 
 
 def create_stripe_link(order):
@@ -165,14 +179,19 @@ def whatsapp():
     reply = clean
 
     if order:
+        pago = order.get("pago", "tarjeta")
         try:
-            session     = create_stripe_link(order)
-            payment_url = session.url
-            reply      += f"\n\n💳 *Link de pago:*\n{payment_url}"
-            save_order(order, payment_url, session.id)
-            notify_erika(order, payment_url)
+            if pago == "tarjeta":
+                session     = create_stripe_link(order)
+                payment_url = session.url
+                reply      += f"\n\n💳 *Link de pago:*\n{payment_url}"
+                save_order(order, payment_url, session.id)
+                notify_erika(order, payment_url)
+            else:
+                save_order(order, "zelle", "zelle-" + order.get("nombre","").replace(" ","-"))
+                notify_erika(order, f"Pago por Zelle — ${order.get('total')} pendiente de confirmación")
         except Exception as e:
-            print(f"Stripe/Twilio/Supabase error: {e}")
+            print(f"Error procesando orden: {e}")
 
     twiml = MessagingResponse()
     twiml.message(reply)
