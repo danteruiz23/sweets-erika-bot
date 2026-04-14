@@ -15,8 +15,8 @@ stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
 twilio_client = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
-ERIKA_WHATSAPP = os.environ["ERIKA_WHATSAPP"]   # ej: whatsapp:+13055551234
-TWILIO_FROM     = os.environ["TWILIO_FROM"]      # ej: whatsapp:+14155238886
+ERIKA_WHATSAPP = os.environ["ERIKA_WHATSAPP"]
+TWILIO_FROM    = os.environ["TWILIO_FROM"]
 
 conversations = {}
 
@@ -47,7 +47,7 @@ FLUJO DE PEDIDO — recopila en orden:
 
 Cuando tengas TODOS los datos, confirma el resumen y el total, luego incluye al final:
 ###ORDER_COMPLETE###
-{"nombre":"...","productos":"...","fecha":"...","entrega":"...","total":0}
+{"nombre":"...","contacto":"...","productos":"...","fecha":"...","entrega":"...","total":0}
 ###END_ORDER###
 
 Teléfono: 786-499-9520 | Instagram: @erikalng"""
@@ -67,34 +67,10 @@ def clean_text(text):
     return re.sub(r'###ORDER_COMPLETE###.*?###END_ORDER###', '', text, flags=re.DOTALL).strip()
 
 
-def save_order(order, payment_url, session_id):
-    try:
-        supabase.table("pedidos").insert({
-            "nombre": order.get("nombre", ""),
-            "contacto": order.get("contacto", ""),
-            "productos": order.get("productos", ""),
-            "fecha_entrega": order.get("fecha", ""),
-            "entrega": order.get("entrega", ""),
-            "total": order.get("total", 0),
-            "estado": "pendiente",
-            "stripe_url": payment_url,
-            "stripe_session_id": session_id,
-        }).execute()
-    except Exception as e:
-        print(f"Supabase error: {e}")
-
-
-def update_order_status(session_id, status):
-    try:
-        supabase.table("pedidos").update({"estado": status}).eq("stripe_session_id", session_id).execute()
-    except Exception as e:
-        print(f"Supabase update error: {e}")
-
-
-
-    total_cents = int(order.get("total", 0) * 100)
+def create_stripe_link(order):
+    total_cents = int(float(order.get("total", 0)) * 100)
     if total_cents <= 0:
-        total_cents = 5000  # fallback $50
+        total_cents = 5000
 
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
@@ -119,6 +95,30 @@ def update_order_status(session_id, status):
         }
     )
     return session
+
+
+def save_order(order, payment_url, session_id):
+    try:
+        supabase.table("pedidos").insert({
+            "nombre": order.get("nombre", ""),
+            "contacto": order.get("contacto", ""),
+            "productos": order.get("productos", ""),
+            "fecha_entrega": order.get("fecha", ""),
+            "entrega": order.get("entrega", ""),
+            "total": order.get("total", 0),
+            "estado": "pendiente",
+            "stripe_url": payment_url,
+            "stripe_session_id": session_id,
+        }).execute()
+    except Exception as e:
+        print(f"Supabase error: {e}")
+
+
+def update_order_status(session_id, status):
+    try:
+        supabase.table("pedidos").update({"estado": status}).eq("stripe_session_id", session_id).execute()
+    except Exception as e:
+        print(f"Supabase update error: {e}")
 
 
 def notify_erika(order, payment_url):
@@ -166,9 +166,9 @@ def whatsapp():
 
     if order:
         try:
-            session = create_stripe_link(order)
+            session     = create_stripe_link(order)
             payment_url = session.url
-            reply += f"\n\n💳 *Link de pago:*\n{payment_url}"
+            reply      += f"\n\n💳 *Link de pago:*\n{payment_url}"
             save_order(order, payment_url, session.id)
             notify_erika(order, payment_url)
         except Exception as e:
@@ -191,9 +191,9 @@ def stripe_webhook():
         return jsonify({"error": str(e)}), 400
 
     if event["type"] == "checkout.session.completed":
-        session  = event["data"]["object"]
-        nombre   = session["metadata"].get("nombre", "Cliente")
-        total    = session["amount_total"] / 100
+        session    = event["data"]["object"]
+        nombre     = session["metadata"].get("nombre", "Cliente")
+        total      = session["amount_total"] / 100
         session_id = session["id"]
         update_order_status(session_id, "pagado")
         twilio_client.messages.create(
